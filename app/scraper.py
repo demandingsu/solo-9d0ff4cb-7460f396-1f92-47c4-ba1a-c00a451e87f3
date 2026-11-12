@@ -68,7 +68,13 @@ async def scrape(list_url: str) -> ScrapeResult:
 async def _collect_listing_pages(
     client: httpx.AsyncClient, first_url: str, result: ScrapeResult
 ) -> list[str]:
-    """遍历同站分页，汇总去重后的详情链接。"""
+    """遍历同站分页，汇总去重后的详情链接。
+
+    遇到下列任一情况即停止翻页并记录 list 阶段失败：
+    - 请求本身失败（非 2xx、超时、连接错误）；
+    - 页面以 HTTP 200 返回但缺少公告目录结构（维护页）。
+    停止前已确认的详情链接照常返回，保证已核实的受阻路段得以保留。
+    """
     collected: list[str] = []
     seen_pages: set[str] = set()
     seen_details: set[str] = set()
@@ -88,6 +94,19 @@ async def _collect_listing_pages(
             break
 
         listing: Listing = parse_listing(html, url)
+        if not listing.has_directory:
+            # HTTP 200 但缺少公告目录结构（典型为维护页）：不能当作空目录或
+            # 分页终点。记录该页地址并停止翻页，结果判为 undetermined；
+            # 此前已从其他页面确认的详情链接仍保留，受阻路段不会丢失。
+            result.failures.append(
+                FetchFailureRecord(
+                    url=url,
+                    stage="list",
+                    reason="HTTP 200 但页面缺少公告目录结构（疑似维护页）",
+                )
+            )
+            break
+
         for link in listing.detail_links:
             key = normalize_url(link)
             if key not in seen_details:

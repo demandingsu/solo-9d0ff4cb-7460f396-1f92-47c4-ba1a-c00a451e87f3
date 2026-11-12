@@ -2,8 +2,11 @@
 
 数据全部内置，无外部依赖，供采集 API 离线联调。
 页面结构与真实公告站点同构：
-- /announcements?page=N  列表页（含“下一页”同站分页）
-- /announcement/<id>     详情页（路段/方向/生效日期/每周封闭日/起止钟点）
+- /announcements?page=N     列表页（含“下一页”同站分页）
+- /announcement/<id>        详情页（路段/方向/生效日期/每周封闭日/起止钟点）
+- /maintenance              维护页：HTTP 200 但缺少公告目录结构（首页维护场景）
+- /paged-maintenance?page=N 第 1 页为合法目录、翻到第 2 页返回维护页（后续页维护场景）
+- /announcements-empty      合法空目录：保有表格结构但没有任何公告行
 - 故意提供一个失效链接，用于验证“采集失败 -> 无法判定”的处理。
 """
 from __future__ import annotations
@@ -30,8 +33,21 @@ LIST_TEMPLATE = """
   </tbody>
 </table>
 <div class="pagination">
-  {% if page > 1 %}<a rel="prev" href="/announcements?page={{ page - 1 }}">上一页</a>{% endif %}
-  {% if has_next %}<a rel="next" href="/announcements?page={{ page + 1 }}">下一页</a>{% endif %}
+  {% if prev_href %}<a rel="prev" href="{{ prev_href }}">上一页</a>{% endif %}
+  {% if next_href %}<a rel="next" href="{{ next_href }}">下一页</a>{% endif %}
+</div>
+</body></html>
+"""
+
+# 维护页：站点有时以 HTTP 200 返回，页面不含任何公告目录结构。
+MAINTENANCE_TEMPLATE = """
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>系统维护中</title></head>
+<body>
+<div class="maintenance-notice">
+  <h1>系统维护中</h1>
+  <p>公告系统正在升级维护，预计 22:00 至次日 06:00 暂停访问，请稍后再试。</p>
+  <p>给您带来不便，敬请谅解。</p>
 </div>
 </body></html>
 """
@@ -105,6 +121,15 @@ def _all_items() -> list[dict]:
     return items
 
 
+def _render_listing(items, page, has_next, *, path="/announcements"):
+    """渲染列表页；分页链接显式传入，便于不同路由指向不同的后续页。"""
+    prev_href = f"{path}?page={page - 1}" if page > 1 else None
+    next_href = f"{path}?page={page + 1}" if has_next else None
+    return render_template_string(
+        LIST_TEMPLATE, items=items, prev_href=prev_href, next_href=next_href
+    )
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
@@ -119,8 +144,33 @@ def listing():
     if not page_items and page != 1:
         abort(404)
     has_next = start + PAGE_SIZE < len(items)
+    return _render_listing(page_items, page, has_next)
+
+
+@app.get("/announcements-empty")
+def empty_listing():
+    """合法空目录：保有公告表格结构，但没有任何公告行，应允许判为空目录。"""
+    return _render_listing([], page=1, has_next=False)
+
+
+@app.get("/maintenance")
+def maintenance():
+    """首页维护：以 HTTP 200 返回维护页，页面缺少公告目录结构。"""
+    return render_template_string(MAINTENANCE_TEMPLATE)
+
+
+@app.get("/paged-maintenance")
+def paged_maintenance():
+    """后续页维护：第 1 页是合法目录并带“下一页”，第 2 页返回 HTTP 200 维护页。"""
+    page = max(1, request.args.get("page", default=1, type=int))
+    if page >= 2:
+        return render_template_string(MAINTENANCE_TEMPLATE)
+    items = _all_items()
+    page_items = items[: PAGE_SIZE]
+    # 显式让“下一页”指向仍返回维护页的第 2 页
+    next_href = "/paged-maintenance?page=2"
     return render_template_string(
-        LIST_TEMPLATE, items=page_items, page=page, has_next=has_next
+        LIST_TEMPLATE, items=page_items, prev_href=None, next_href=next_href
     )
 
 

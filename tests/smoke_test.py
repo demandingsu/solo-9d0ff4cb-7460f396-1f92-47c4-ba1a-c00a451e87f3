@@ -103,4 +103,37 @@ assert any(b["road_id"] == "G15-K123" for b in d9["blocked"])
 hit9 = next(b for b in d9["blocked"] if b["road_id"] == "G15-K123")
 assert hit9["blocking"][0]["start"] == "2026-11-16T22:00:00+08:00"
 
+# 10. 首页维护（HTTP 200 但缺少目录结构）：不得误判为空目录/clear，须记 list 失败
+d10 = show("首页维护页（HTTP 200 无目录结构）", call([
+    {"road_id": "G15-K123", "direction": "下行",
+     "enter_at": "2026-11-16T21:30:00+08:00", "exit_at": "2026-11-17T02:00:00+08:00"},
+], list_url="http://127.0.0.1:8080/maintenance"))
+assert d10["status"] == "undetermined", "维护页绝不能报 clear"
+assert d10["fetched_announcements"] == 0
+assert d10["clear"] == [] and d10["blocked"] == []
+f10 = next(f for f in d10["failures"] if f["stage"] == "list")
+assert f10["url"].endswith("/maintenance")
+
+# 11. 翻到维护页：第 1 页已确认的受阻路段须保留，未核实路段不得报 clear
+d11 = show("后续页维护（已确认受阻保留，整体 undetermined）", call([
+    {"road_id": "G15-K123", "direction": "下行",
+     "enter_at": "2026-11-16T21:30:00+08:00", "exit_at": "2026-11-17T02:00:00+08:00"},
+    {"road_id": "G99-K999", "direction": "上行",
+     "enter_at": "2026-11-16T21:30:00+08:00", "exit_at": "2026-11-17T02:00:00+08:00"},
+], list_url="http://127.0.0.1:8080/paged-maintenance?page=1"))
+assert d11["status"] == "undetermined"
+assert any(b["road_id"] == "G15-K123" for b in d11["blocked"]), "已确认受阻路段必须保留"
+assert d11["clear"] == [], "维护页之后未核实路段不得判 clear"
+assert any(f["stage"] == "list" and f["url"].endswith("/paged-maintenance?page=2")
+           for f in d11["failures"])
+
+# 12. 合法空目录（保有表格结构但无公告行）：零失败时允许判 clear
+d12 = show("合法空目录 -> clear", call([
+    {"road_id": "G99-K999", "direction": "上行",
+     "enter_at": "2026-11-16T21:30:00+08:00", "exit_at": "2026-11-17T02:00:00+08:00"},
+], list_url="http://127.0.0.1:8080/announcements-empty"))
+assert d12["status"] == "clear", "保有目录结构的空页应允许判空目录"
+assert d12["failures"] == []
+assert any(c["road_id"] == "G99-K999" for c in d12["clear"])
+
 print("全部断言通过 ✔")

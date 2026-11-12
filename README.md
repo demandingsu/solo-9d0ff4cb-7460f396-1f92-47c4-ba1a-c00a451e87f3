@@ -11,6 +11,19 @@
 5. 任何页面抓取失败时标记 `undetermined`（无法判定）并给出失败地址，
    **绝不会在信息不完整时报“全程畅通”**。
 
+### 维护页与合法空目录的区分
+
+公告站有时会以 **HTTP 200 返回维护页**，其页面不含公告目录结构。采集器通过
+“是否存在公告目录容器（`table` / `ul.announcement-list` / `div.list` /
+`div.announcements`）”区分两种“没有公告行”的页面：
+
+- **合法空目录**：保有目录结构、仅无公告行（如 `tbody` 为空的表格）——允许判为
+  空目录，零采集失败时可给出 `clear`；
+- **维护页**：HTTP 200 但缺少目录结构——在 `failures` 中以 `stage="list"` 记下
+  该页地址，整体判为 `undetermined` 并停止继续翻页。此前已从其他页面确认的
+  详情照常采集，**已确认的受阻路段仍会保留在 `blocked` 中**，只是未核实路段
+  不会被误报为 `clear`。
+
 ## 时间规则（需求约定）
 
 - 公告中的所有时间一律按**北京时间（UTC+8）**解释；请求中的时间可带任意
@@ -34,7 +47,9 @@
 │   ├── scraper.py        # httpx 异步抓取、重试、失败记录
 │   ├── scheduler.py      # 路段匹配与区间相交判定
 │   └── timeutils.py      # 北京时间、跨午夜、生效期、星期解析
-├── sample-site/          # 离线样本站（Flask，同构分页+详情，含一个失效链接）
+├── sample-site/          # 离线样本站（Flask，同构分页+详情，含失效链接与维护页）
+│   └── 路由：/announcements、/announcements-empty（合法空目录）、
+│       /maintenance（首页维护页）、/paged-maintenance（后续页维护）
 ├── tests/smoke_test.py   # 端到端冒烟测试（仅标准库）
 ├── Dockerfile
 ├── docker-compose.yml
@@ -92,6 +107,14 @@ curl -X POST http://localhost:8000/check \
 
 样本站故意包含一个已撤销公告的失效链接，因此对样本站调用时 `status`
 会是 `undetermined`，同时 `failures` 中给出 404 地址——用于演示失败处理。
+此外样本站还提供：
+
+- `GET /maintenance`：**首页维护**，HTTP 200 但无公告目录结构，应判
+  `undetermined` 且 `failures[].stage="list"`；
+- `GET /paged-maintenance?page=1`：第 1 页为合法目录、`下一页` 指向的第 2 页
+  返回维护页，用于验证“已确认受阻路段保留、整体 undetermined”；
+- `GET /announcements-empty`：保有表格结构但无公告行的**合法空目录**，
+  零失败时允许判 `clear`。
 
 ## 本地开发（不用 Docker）
 
@@ -107,6 +130,9 @@ python tests/smoke_test.py
 
 - 列表页：提取同站（同 scheme + 同 host）的公告详情链接，并按“下一页/
   next/›”等文本识别分页链接，最多跟随 50 页并按 URL 去重防环。
+- 列表页必须先命中公告目录结构（`table`、`ul.announcement-list`、`div.list`、
+  `div.announcements`）才会提取链接：命中结构但无公告行视为合法空目录；
+  未命中结构（HTTP 200 维护页）按 list 阶段采集失败处理并停止翻页。
 - 详情页：从含“路段编号/方向/生效日期/封闭日/封闭时间”关键词的行中用
   正则提取字段；字段缺失或无法解析时该详情页按采集失败处理。
 - 方向：公告为“双向”时匹配任一通行方向；否则需精确一致（忽略空白）。

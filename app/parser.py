@@ -21,6 +21,10 @@ from .timeutils import (
 
 NEXT_PAGE_TOKENS = ("下一页", "下页", "next", ">", "›", "»")
 
+# 公告“目录结构”选择器：命中其一才认为该页是公告列表页。
+# 维护页通常以 HTTP 200 返回但不含任何目录容器，必须与“合法空目录”区分开。
+DIRECTORY_SELECTOR = "table, ul.announcement-list, div.list, div.announcements"
+
 
 @dataclass
 class ClosureAnnouncement:
@@ -43,6 +47,9 @@ class ClosureAnnouncement:
 class Listing:
     detail_links: list[str] = field(default_factory=list)
     next_page_url: str | None = None
+    # 是否保有公告目录结构。True 但 detail_links 为空 => 合法空目录；
+    # False => 缺少目录结构（典型为 HTTP 200 的维护页），不应当作空目录。
+    has_directory: bool = False
 
 
 def _absolute(base_url: str, href: str) -> str:
@@ -55,18 +62,30 @@ def _same_origin(base_url: str, target: str) -> bool:
 
 
 def parse_listing(html: str, page_url: str) -> Listing:
-    """解析列表页：提取同站详情链接与“下一页”链接。"""
+    """解析列表页：提取同站详情链接与“下一页”链接。
+
+    通过是否存在公告目录容器区分两种“无链接”页面：
+    - 保有目录结构但无公告行：合法空目录（has_directory=True）；
+    - 缺少目录结构：维护页等异常页面（has_directory=False），
+      由采集层据此记录 list 阶段失败并判为 undetermined。
+    """
     soup = BeautifulSoup(html, "html.parser")
     listing = Listing()
     seen: set[str] = set()
 
+    # 仅当存在公告目录结构时才提取详情链接，避免把维护页误作空目录。
+    containers = soup.select(DIRECTORY_SELECTOR)
+    listing.has_directory = bool(containers)
+    if not listing.has_directory:
+        # 维护页仍可能带分页链接，但在缺少目录结构时绝不继续翻页或收集链接。
+        return listing
+
     # 详情链接：优先表格行内链接，其次公告列表容器，最后按 href 关键词兜底
-    containers = soup.select("table, ul.announcement-list, div.list, div.announcements")
     anchors = []
-    if containers:
-        for c in containers:
-            anchors.extend(c.find_all("a", href=True))
+    for c in containers:
+        anchors.extend(c.find_all("a", href=True))
     if not anchors:
+        # 目录容器存在但内部没有链接（合法空目录常见形态）：整页兜底一次
         anchors = soup.find_all("a", href=True)
 
     for a in anchors:
